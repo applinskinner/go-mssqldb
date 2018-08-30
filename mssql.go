@@ -16,6 +16,8 @@ import (
 	"unicode"
 )
 
+var Location = time.UTC
+
 // ReturnStatus may be used to return the return value from a proc.
 //
 //   var rs mssql.ReturnStatus
@@ -373,6 +375,14 @@ type queryNotifSub struct {
 	timeout uint32
 }
 
+func makeQueryNotifSub(id, options string, timeout time.Duration) *queryNotifSub {
+	to := uint32(timeout / time.Second)
+	if to < 1 {
+		to = 1
+	}
+	return &queryNotifSub{id, options, to}
+}
+
 func (c *Conn) Prepare(query string) (driver.Stmt, error) {
 	if !c.connectionGood {
 		return nil, driver.ErrBadConn
@@ -580,6 +590,9 @@ func (s *Stmt) queryContext(ctx context.Context, args []namedValue) (rows driver
 	if !s.c.connectionGood {
 		return nil, driver.ErrBadConn
 	}
+	if notifSub, ok := queryNotificationFromContext(ctx); ok {
+		s.notifSub = notifSub
+	}
 	if err = s.sendQuery(args); err != nil {
 		return nil, s.c.checkBadConn(err)
 	}
@@ -627,6 +640,9 @@ func (s *Stmt) Exec(args []driver.Value) (driver.Result, error) {
 func (s *Stmt) exec(ctx context.Context, args []namedValue) (res driver.Result, err error) {
 	if !s.c.connectionGood {
 		return nil, driver.ErrBadConn
+	}
+	if notifSub, ok := queryNotificationFromContext(ctx); ok {
+		s.notifSub = notifSub
 	}
 	if err = s.sendQuery(args); err != nil {
 		return nil, s.c.checkBadConn(err)

@@ -3,6 +3,7 @@
 package mssql
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -147,12 +148,12 @@ func (s *Stmt) makeParamExtra(val driver.Value) (res param, err error) {
 		res.ti.Size = len(res.buffer)
 	case civil.Date:
 		res.ti.TypeId = typeDateN
-		res.buffer = encodeDate(val.In(time.UTC))
+		res.buffer = encodeDate(val.In(Location))
 		res.ti.Size = len(res.buffer)
 	case civil.DateTime:
 		res.ti.TypeId = typeDateTime2N
 		res.ti.Scale = 7
-		res.buffer = encodeDateTime2(val.In(time.UTC), int(res.ti.Scale))
+		res.buffer = encodeDateTime2(val.In(Location), int(res.ti.Scale))
 		res.ti.Size = len(res.buffer)
 	case civil.Time:
 		res.ti.TypeId = typeTimeN
@@ -181,4 +182,15 @@ func (s *Stmt) makeParamExtra(val driver.Value) (res param, err error) {
 
 func scanIntoOut(name string, fromServer, scanInto interface{}) error {
 	return convertAssign(scanInto, fromServer)
+}
+
+type queryNotificationKey struct{}
+
+func QueryNotificationContext(ctx context.Context, id, options string, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, queryNotificationKey{}, makeQueryNotifSub(id, options, timeout))
+}
+
+func queryNotificationFromContext(ctx context.Context) (sub *queryNotifSub, ok bool) {
+	sub, ok = ctx.Value(queryNotificationKey{}).(*queryNotifSub)
+	return
 }
