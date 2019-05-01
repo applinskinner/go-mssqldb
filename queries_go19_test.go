@@ -870,13 +870,13 @@ func TestDateTimeParam19(t *testing.T) {
 
 	// testing DateTime1, only supported on go 1.9
 	var emptydate time.Time
-	mindate1 := time.Date(1753, 1, 1, 0, 0, 0, 0, Location)
-	maxdate1 := time.Date(9999, 12, 31, 23, 59, 59, 997000000, Location)
+	mindate1 := time.Date(1753, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxdate1 := time.Date(9999, 12, 31, 23, 59, 59, 997000000, time.UTC)
 	testdates1 := []DateTime1{
 		DateTime1(mindate1),
 		DateTime1(maxdate1),
-		DateTime1(time.Date(1752, 12, 31, 23, 59, 59, 997000000, Location)), // just a little below minimum date
-		DateTime1(time.Date(10000, 1, 1, 0, 0, 0, 0, Location)),             // just a little over maximum date
+		DateTime1(time.Date(1752, 12, 31, 23, 59, 59, 997000000, time.UTC)), // just a little below minimum date
+		DateTime1(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)),             // just a little over maximum date
 		DateTime1(emptydate),
 	}
 

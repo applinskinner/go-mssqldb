@@ -16,8 +16,6 @@ import (
 	"unicode"
 )
 
-var Location = time.UTC
-
 // ReturnStatus may be used to return the return value from a proc.
 //
 //   var rs mssql.ReturnStatus
