@@ -8,10 +8,10 @@ import (
 )
 
 type TestFields struct {
-	PBinary       []byte  `db:"p_binary"`
-	PVarchar      string  `db:"p_varchar"`
-	PNvarchar     *string `db:"p_nvarchar"`
-	TimeValue     time.Time
+	PBinary       []byte    `tvp:"p_binary"`
+	PVarchar      string    `json:"p_varchar"`
+	PNvarchar     *string   `json:"p_nvarchar"`
+	TimeValue     time.Time `echo:"-"`
 	TimeNullValue *time.Time
 }
 
@@ -19,15 +19,33 @@ type TestFieldError struct {
 	ErrorValue []*byte
 }
 
-type TestFieldsUnsuportedTypes struct {
+type TestFieldsUnsupportedTypes struct {
 	ErrorType TestFieldError
 }
 
 func TestTVPType_columnTypes(t *testing.T) {
+	type customTypeAllFieldsSkipOne struct {
+		SkipTest int `tvp:"-"`
+	}
+	type customTypeAllFieldsSkipMoreOne struct {
+		SkipTest  int `tvp:"-"`
+		SkipTest1 int `json:"-"`
+	}
+	type skipWrongField struct {
+		SkipTest  int
+		SkipTest1 []*byte `json:"skip_test" tvp:"-"`
+	}
+	type structType struct {
+		SkipTest  int               `json:"-" tvp:"test"`
+		SkipTest1 []*skipWrongField `json:"any" tvp:"tvp"`
+	}
+	type skipWithAnotherTagValue struct {
+		SkipTest int `json:"-" tvp:"test"`
+	}
+
 	type fields struct {
-		TVPName   string
-		TVPScheme string
-		TVPValue  interface{}
+		TVPName  string
+		TVPValue interface{}
 	}
 	tests := []struct {
 		name    string
@@ -36,36 +54,70 @@ func TestTVPType_columnTypes(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "Test Full",
+			name: "Test Pass",
 			fields: fields{
 				TVPValue: []TestFields{TestFields{}},
 			},
 		},
 		{
-			name: "TVPValue has wrong type",
+			name: "Value has wrong field type",
 			fields: fields{
 				TVPValue: []TestFieldError{TestFieldError{}},
 			},
 			wantErr: true,
 		},
 		{
-			name: "TVPValue has wrong type",
+			name: "Value has wrong type",
 			fields: fields{
-				TVPValue: []TestFieldsUnsuportedTypes{},
+				TVPValue: []TestFieldsUnsupportedTypes{},
 			},
 			wantErr: true,
+		},
+		{
+			name: "Value has wrong type",
+			fields: fields{
+				TVPValue: []structType{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "CustomTag all fields are skip, single field",
+			fields: fields{
+				TVPValue: []customTypeAllFieldsSkipOne{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "CustomTag all fields are skip, > 1 field",
+			fields: fields{
+				TVPValue: []customTypeAllFieldsSkipMoreOne{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "CustomTag all fields are skip wrong field type",
+			fields: fields{
+				TVPValue: []skipWrongField{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "CustomTag tag value is not -",
+			fields: fields{
+				TVPValue: []skipWithAnotherTagValue{},
+			},
+			wantErr: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tvp := TVPType{
-				TVPTypeName: tt.fields.TVPName,
-				TVPScheme:   tt.fields.TVPScheme,
-				TVPValue:    tt.fields.TVPValue,
+			tvp := TVP{
+				TypeName: tt.fields.TVPName,
+				Value:    tt.fields.TVPValue,
 			}
-			_, err := tvp.columnTypes()
+			_, _, err := tvp.columnTypes()
 			if (err != nil) != tt.wantErr {
-				t.Errorf("TVPType.columnTypes() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("TVP.columnTypes() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 		})
@@ -74,9 +126,8 @@ func TestTVPType_columnTypes(t *testing.T) {
 
 func TestTVPType_check(t *testing.T) {
 	type fields struct {
-		TVPName   string
-		TVPScheme string
-		TVPValue  interface{}
+		TVPName  string
+		TVPValue interface{}
 	}
 
 	var nullSlice []*string
@@ -87,11 +138,11 @@ func TestTVPType_check(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "TVPTypeName is nil",
+			name:    "TypeName is nil",
 			wantErr: true,
 		},
 		{
-			name: "TVPValue is nil",
+			name: "Value is nil",
 			fields: fields{
 				TVPName:  "Test",
 				TVPValue: nil,
@@ -99,14 +150,14 @@ func TestTVPType_check(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TVPValue is nil",
+			name: "Value is nil",
 			fields: fields{
 				TVPName: "Test",
 			},
 			wantErr: true,
 		},
 		{
-			name: "TVPValue isn't slice",
+			name: "Value isn't slice",
 			fields: fields{
 				TVPName:  "Test",
 				TVPValue: "",
@@ -114,7 +165,7 @@ func TestTVPType_check(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TVPValue isn't slice",
+			name: "Value isn't slice",
 			fields: fields{
 				TVPName:  "Test",
 				TVPValue: 12345,
@@ -122,7 +173,7 @@ func TestTVPType_check(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TVPValue isn't slice",
+			name: "Value isn't slice",
 			fields: fields{
 				TVPName:  "Test",
 				TVPValue: nullSlice,
@@ -130,7 +181,7 @@ func TestTVPType_check(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TVPValue isn't right",
+			name: "Value isn't right",
 			fields: fields{
 				TVPName:  "Test",
 				TVPValue: []*fields{},
@@ -138,23 +189,117 @@ func TestTVPType_check(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TVPValue is right",
+			name: "Value is right",
 			fields: fields{
 				TVPName:  "Test",
 				TVPValue: []fields{},
 			},
 			wantErr: false,
 		},
+		{
+			name: "Value is right",
+			fields: fields{
+				TVPName:  "Test",
+				TVPValue: []fields{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Value is right",
+			fields: fields{
+				TVPName:  "[Test]",
+				TVPValue: []fields{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Value is right",
+			fields: fields{
+				TVPName:  "[123].[Test]",
+				TVPValue: []fields{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "TVP name is right",
+			fields: fields{
+				TVPName:  "[123].Test",
+				TVPValue: []fields{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "TVP name is right",
+			fields: fields{
+				TVPName:  "123.[Test]",
+				TVPValue: []fields{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "TVP name is wrong",
+			fields: fields{
+				TVPName:  "123.[Test\n]",
+				TVPValue: []fields{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "TVP name is wrong",
+			fields: fields{
+				TVPName:  "123.[Test].456",
+				TVPValue: []fields{},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tvp := TVPType{
-				TVPTypeName: tt.fields.TVPName,
-				TVPScheme:   tt.fields.TVPScheme,
-				TVPValue:    tt.fields.TVPValue,
+			tvp := TVP{
+				TypeName: tt.fields.TVPName,
+				Value:    tt.fields.TVPValue,
 			}
 			if err := tvp.check(); (err != nil) != tt.wantErr {
-				t.Errorf("TVPType.check() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("TVP.check() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestTVPType_encode(t *testing.T) {
+	type fields struct {
+		TVPTypeName  string
+		TVPValue     interface{}
+		TVPCustomTag string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name: "Value gets error unsupported type",
+			fields: fields{
+				TVPTypeName: "Test",
+				TVPValue:    []TestFieldError{},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tvp := TVP{
+				TypeName: tt.fields.TVPTypeName,
+				Value:    tt.fields.TVPValue,
+			}
+			schema, name, err := getSchemeAndName(tt.fields.TVPTypeName)
+			if err != nil {
+				t.Errorf("getSchemeAndName() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			_, err = tvp.encode(schema, name)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("TVP.encode() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -164,9 +309,9 @@ func BenchmarkTVPType_check(b *testing.B) {
 	type val struct {
 		Value string
 	}
-	tvp := TVPType{
-		TVPTypeName: "Test",
-		TVPValue:    []val{},
+	tvp := TVP{
+		TypeName: "Test",
+		Value:    []val{},
 	}
 	for i := 0; i < b.N; i++ {
 		err := tvp.check()
@@ -209,50 +354,187 @@ func BenchmarkColumnTypes(b *testing.B) {
 		boolsNull *bool
 	}
 	wal := make([]str, 100)
-	tvp := TVPType{
-		TVPTypeName: "Test",
-		TVPValue:    wal,
+	tvp := TVP{
+		TypeName: "Test",
+		Value:    wal,
 	}
 	for i := 0; i < b.N; i++ {
-		_, err := tvp.columnTypes()
+		_, _, err := tvp.columnTypes()
 		if err != nil {
 			b.Error(err)
 		}
 	}
 }
 
-func TestTVPType_encode(t *testing.T) {
-	type fields struct {
-		TVPTypeName string
-		TVPScheme   string
-		TVPValue    interface{}
+func TestIsSkipField(t *testing.T) {
+	type args struct {
+		tvpTagValue    string
+		isTvpValue     bool
+		jsonTagValue   string
+		isJsonTagValue bool
 	}
 	tests := []struct {
-		name    string
-		fields  fields
-		want    []byte
-		wantErr bool
+		name string
+		args args
+		want bool
 	}{
 		{
-			name: "TVPValue get error unsupport type",
-			fields: fields{
-				TVPTypeName: "Test",
-				TVPValue:    []TestFieldError{},
+			name: "Empty tags",
+			want: false,
+		},
+		{
+			name: "tvp is skip",
+			want: true,
+			args: args{
+				isTvpValue:  true,
+				tvpTagValue: skipTagValue,
 			},
-			wantErr: true,
+		},
+		{
+			name: "tvp is any",
+			want: false,
+			args: args{
+				isTvpValue:  true,
+				tvpTagValue: "tvp",
+			},
+		},
+		{
+			name: "Json is skip",
+			want: true,
+			args: args{
+				isJsonTagValue: true,
+				jsonTagValue:   skipTagValue,
+			},
+		},
+		{
+			name: "Json is any",
+			want: false,
+			args: args{
+				isJsonTagValue: true,
+				jsonTagValue:   "any",
+			},
+		},
+		{
+			name: "Json is skip tvp is skip",
+			want: true,
+			args: args{
+				isJsonTagValue: true,
+				jsonTagValue:   skipTagValue,
+				isTvpValue:     true,
+				tvpTagValue:    skipTagValue,
+			},
+		},
+		{
+			name: "Json is skip tvp is any",
+			want: false,
+			args: args{
+				isJsonTagValue: true,
+				jsonTagValue:   skipTagValue,
+				isTvpValue:     true,
+				tvpTagValue:    "tvp",
+			},
+		},
+		{
+			name: "Json is any tvp is skip",
+			want: true,
+			args: args{
+				isJsonTagValue: true,
+				jsonTagValue:   "json",
+				isTvpValue:     true,
+				tvpTagValue:    skipTagValue,
+			},
+		},
+		{
+			name: "Json is any tvp is skip",
+			want: false,
+			args: args{
+				isJsonTagValue: true,
+				jsonTagValue:   "json",
+				isTvpValue:     true,
+				tvpTagValue:    "tvp",
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tvp := TVPType{
-				TVPTypeName: tt.fields.TVPTypeName,
-				TVPScheme:   tt.fields.TVPScheme,
-				TVPValue:    tt.fields.TVPValue,
+			if got := IsSkipField(tt.args.tvpTagValue, tt.args.isTvpValue, tt.args.jsonTagValue, tt.args.isJsonTagValue); got != tt.want {
+				t.Errorf("IsSkipField() = %v, schema %v", got, tt.want)
 			}
-			_, err := tvp.encode()
+		})
+	}
+}
+
+func Test_getSchemeAndName(t *testing.T) {
+	type args struct {
+		tvpName string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		schema  string
+		tvpName string
+		wantErr bool
+	}{
+		{
+			name:    "Empty object name",
+			wantErr: true,
+		},
+		{
+			name:    "Wrong object name",
+			wantErr: true,
+			args: args{
+				tvpName: "1.2.3",
+			},
+		},
+		{
+			name:    "Schema+name",
+			wantErr: false,
+			args: args{
+				tvpName: "obj.tvp",
+			},
+			schema:  "obj",
+			tvpName: "tvp",
+		},
+		{
+			name:    "Schema+name",
+			wantErr: false,
+			args: args{
+				tvpName: "[obj].[tvp]",
+			},
+			schema:  "obj",
+			tvpName: "tvp",
+		},
+		{
+			name:    "only name",
+			wantErr: false,
+			args: args{
+				tvpName: "tvp",
+			},
+			schema:  "",
+			tvpName: "tvp",
+		},
+		{
+			name:    "only name",
+			wantErr: false,
+			args: args{
+				tvpName: "[tvp]",
+			},
+			schema:  "",
+			tvpName: "tvp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema, name, err := getSchemeAndName(tt.args.tvpName)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("TVPType.encode() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("getSchemeAndName() error = %v, wantErr %v", err, tt.wantErr)
 				return
+			}
+			if schema != tt.schema {
+				t.Errorf("getSchemeAndName() schema = %v, schema %v", schema, tt.schema)
+			}
+			if name != tt.tvpName {
+				t.Errorf("getSchemeAndName() name = %v, schema %v", name, tt.tvpName)
 			}
 		})
 	}
