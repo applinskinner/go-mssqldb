@@ -12,7 +12,7 @@ import (
 	"time"
 
 	// "github.com/cockroachdb/apd"
-	"cloud.google.com/go/civil"
+	"github.com/golang-sql/civil"
 )
 
 // Type alias provided for compatibility.
