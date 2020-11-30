@@ -81,20 +81,20 @@ const (
 // packet types
 // https://msdn.microsoft.com/en-us/library/dd304214.aspx
 const (
-	packSQLBatch   packetType = 1
-	packRPCRequest            = 3
-	packReply                 = 4
+	packSQLBatch    packetType = 1
+	packRPCRequest  packetType = 3
+	packReply       packetType = 4
 
 	// 2.2.1.7 Attention: https://msdn.microsoft.com/en-us/library/dd341449.aspx
 	// 4.19.2 Out-of-Band Attention Signal: https://msdn.microsoft.com/en-us/library/dd305167.aspx
-	packAttention = 6
+	packAttention   packetType = 6
 
-	packBulkLoadBCP = 7
-	packTransMgrReq = 14
-	packNormal      = 15
-	packLogin7      = 16
-	packSSPIMessage = 17
-	packPrelogin    = 18
+	packBulkLoadBCP packetType = 7
+	packTransMgrReq packetType = 14
+	packNormal      packetType = 15
+	packLogin7      packetType = 16
+	packSSPIMessage packetType = 17
+	packPrelogin    packetType = 18
 )
 
 // prelogin fields
@@ -129,6 +129,7 @@ type tdsSession struct {
 	log          optionalLogger
 	routedServer string
 	routedPort   uint16
+	returnStatus *ReturnStatus
 }
 
 const (
@@ -155,13 +156,13 @@ func (p keySlice) Less(i, j int) bool { return p[i] < p[j] }
 func (p keySlice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
 // http://msdn.microsoft.com/en-us/library/dd357559.aspx
-func writePrelogin(w *tdsBuffer, fields map[uint8][]byte) error {
+func writePrelogin(packetType packetType, w *tdsBuffer, fields map[uint8][]byte) error {
 	var err error
 
-	w.BeginPacket(packPrelogin, false)
+	w.BeginPacket(packetType, false)
 	offset := uint16(5*len(fields) + 1)
 	keys := make(keySlice, 0, len(fields))
-	for k, _ := range fields {
+	for k := range fields {
 		keys = append(keys, k)
 	}
 	sort.Sort(keys)
@@ -210,12 +211,15 @@ func readPrelogin(r *tdsBuffer) (map[uint8][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if packet_type != 4 {
-		return nil, errors.New("Invalid respones, expected packet type 4, PRELOGIN RESPONSE")
+	if packet_type != packReply {
+		return nil, errors.New("invalid respones, expected packet type 4, PRELOGIN RESPONSE")
+	}
+	if len(struct_buf) == 0 {
+		return nil, errors.New("invalid empty PRELOGIN response, it must contain at least one byte")
 	}
 	offset := 0
 	results := map[uint8][]byte{}
-	for true {
+	for {
 		rec_type := struct_buf[offset]
 		if rec_type == preloginTERMINATOR {
 			break
@@ -295,7 +299,7 @@ func (e *featureExts) Add(f featureExt) error {
 	}
 	id := f.featureID()
 	if _, exists := e.features[id]; exists {
-		f := "Login error: Feature with ID '%v' is already present in FeatureExt block."
+		f := "login error: Feature with ID '%v' is already present in FeatureExt block"
 		return fmt.Errorf(f, id)
 	}
 	if e.features == nil {
@@ -418,7 +422,7 @@ func str2ucs2(s string) []byte {
 
 func ucs22str(s []byte) (string, error) {
 	if len(s)%2 != 0 {
-		return "", fmt.Errorf("Illegal UCS2 string length: %d", len(s))
+		return "", fmt.Errorf("illegal UCS2 string length: %d", len(s))
 	}
 	buf := make([]uint16, len(s)/2)
 	for i := 0; i < len(s); i += 2 {
@@ -770,12 +774,13 @@ type auth interface {
 // use the first one that allows a connection.
 func dialConnection(ctx context.Context, c *Connector, p connectParams) (conn net.Conn, err error) {
 	var ips []net.IP
-	ips, err = net.LookupIP(p.host)
-	if err != nil {
-		ip := net.ParseIP(p.host)
-		if ip == nil {
-			return nil, err
+	ip := net.ParseIP(p.host)
+	if ip == nil {
+		ips, err = net.LookupIP(p.host)
+		if err != nil {
+			return
 		}
+	} else {
 		ips = []net.IP{ip}
 	}
 	if len(ips) == 1 {
@@ -802,7 +807,7 @@ func dialConnection(ctx context.Context, c *Connector, p connectParams) (conn ne
 		}
 		// Wait for either the *first* successful connection, or all the errors
 	wait_loop:
-		for i, _ := range ips {
+		for i := range ips {
 			select {
 			case conn = <-connChan:
 				// Got a connection to use, close any others
@@ -824,7 +829,7 @@ func dialConnection(ctx context.Context, c *Connector, p connectParams) (conn ne
 	}
 	// Can't do the usual err != nil check, as it is possible to have gotten an error before a successful connection
 	if conn == nil {
-		f := "Unable to open tcp connection with host '%v:%v': %v"
+		f := "unable to open tcp connection with host '%v:%v': %v"
 		return nil, fmt.Errorf(f, p.host, resolveServerPort(p.port), err.Error())
 	}
 	return conn, err
@@ -838,22 +843,28 @@ func connect(ctx context.Context, c *Connector, log optionalLogger, p connectPar
 		defer cancel()
 	}
 	// if instance is specified use instance resolution service
+	if p.instance != "" && p.port != 0 {
+		// both instance name and port specified
+		// when port is specified instance name is not used
+		// you should not provide instance name when you provide port
+		log.Println("WARN: You specified both instance name and port in the connection string, port will be used and instance name will be ignored");
+	}
 	if p.instance != "" && p.port == 0 {
 		p.instance = strings.ToUpper(p.instance)
 		d := c.getDialer(&p)
 		instances, err := getInstances(dialCtx, d, p.host)
 		if err != nil {
-			f := "Unable to get instances from Sql Server Browser on host %v: %v"
+			f := "unable to get instances from Sql Server Browser on host %v: %v"
 			return nil, fmt.Errorf(f, p.host, err.Error())
 		}
 		strport, ok := instances[p.instance]["tcp"]
 		if !ok {
-			f := "No instance matching '%v' returned from host '%v'"
+			f := "no instance matching '%v' returned from host '%v'"
 			return nil, fmt.Errorf(f, p.instance, p.host)
 		}
 		port, err := strconv.ParseUint(strport, 0, 16)
 		if err != nil {
-			f := "Invalid tcp port returned from Sql Server Browser '%v': %v"
+			f := "invalid tcp port returned from Sql Server Browser '%v': %v"
 			return nil, fmt.Errorf(f, strport, err.Error())
 		}
 		p.port = port
@@ -892,7 +903,7 @@ initiate_connection:
 		preloginMARS:       {0}, // MARS disabled
 	}
 
-	err = writePrelogin(outbuf, fields)
+	err = writePrelogin(packPrelogin, outbuf, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -904,11 +915,11 @@ initiate_connection:
 
 	encryptBytes, ok := fields[preloginENCRYPTION]
 	if !ok {
-		return nil, fmt.Errorf("Encrypt negotiation failed")
+		return nil, fmt.Errorf("encrypt negotiation failed")
 	}
 	encrypt = encryptBytes[0]
 	if p.encrypt && (encrypt == encryptNotSup || encrypt == encryptOff) {
-		return nil, fmt.Errorf("Server does not support encryption")
+		return nil, fmt.Errorf("server does not support encryption")
 	}
 
 	if encrypt != encryptNotSup {
@@ -916,7 +927,7 @@ initiate_connection:
 		if p.certificate != "" {
 			pem, err := ioutil.ReadFile(p.certificate)
 			if err != nil {
-				return nil, fmt.Errorf("Cannot read certificate %q: %v", p.certificate, err)
+				return nil, fmt.Errorf("cannot read certificate %q: %v", p.certificate, err)
 			}
 			certs := x509.NewCertPool()
 			certs.AppendCertsFromPEM(pem)
@@ -984,45 +995,44 @@ initiate_connection:
 	}
 
 	// processing login response
-	success := false
+	reader := startReading(&sess, ctx, nil)
 	for {
-		tokchan := make(chan tokenStruct, 5)
-		go processResponse(context.Background(), &sess, tokchan, nil)
-		for tok := range tokchan {
-			switch token := tok.(type) {
-			case sspiMsg:
-				sspi_msg, err := auth.NextBytes(token)
-				if err != nil {
-					return nil, err
-				}
-				if sspi_msg != nil && len(sspi_msg) > 0 {
-					outbuf.BeginPacket(packSSPIMessage, false)
-					_, err = outbuf.Write(sspi_msg)
+		tok, err := reader.nextToken()
+		if err == nil {
+			if tok == nil {
+				break
+			} else {
+				switch token := tok.(type) {
+				case sspiMsg:
+					sspi_msg, err := auth.NextBytes(token)
 					if err != nil {
 						return nil, err
 					}
-					err = outbuf.FinishPacket()
-					if err != nil {
-						return nil, err
+					if len(sspi_msg) > 0 {
+						outbuf.BeginPacket(packSSPIMessage, false)
+						_, err = outbuf.Write(sspi_msg)
+						if err != nil {
+							return nil, err
+						}
+						err = outbuf.FinishPacket()
+						if err != nil {
+							return nil, err
+						}
+						sspi_msg = nil
 					}
-					sspi_msg = nil
+				case loginAckStruct:
+					sess.loginAck = token
+				/*case error:
+					return nil, fmt.Errorf("login error: %s", token.Error())*/
+				case doneStruct:
+					if token.isError() {
+						return nil, fmt.Errorf("login error: %s", token.getError())
+					}
 				}
-			case loginAckStruct:
-				success = true
-				sess.loginAck = token
-			case error:
-				return nil, fmt.Errorf("Login error: %s", token.Error())
-			case doneStruct:
-				if token.isError() {
-					return nil, fmt.Errorf("Login error: %s", token.getError())
-				}
-				goto loginEnd
 			}
+		} else {
+			return nil, err
 		}
-	}
-loginEnd:
-	if !success {
-		return nil, fmt.Errorf("Login failed")
 	}
 	if sess.routedServer != "" {
 		toconn.Close()
@@ -1034,4 +1044,10 @@ loginEnd:
 		goto initiate_connection
 	}
 	return &sess, nil
+}
+
+func (sess *tdsSession) setReturnStatus(status ReturnStatus) {
+	if sess.returnStatus != nil {
+		*sess.returnStatus = status
+	}
 }

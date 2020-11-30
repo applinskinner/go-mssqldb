@@ -5,8 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"net"
 	"net/url"
-	"os"
 	"runtime"
 	"testing"
 )
@@ -143,29 +143,18 @@ func TestSendSqlBatch(t *testing.T) {
 		return
 	}
 
-	ch := make(chan tokenStruct, 5)
-	go processResponse(context.Background(), conn, ch, nil)
+	reader := startReading(conn, context.Background(), nil)
 
-	var lastRow []interface{}
-loop:
-	for tok := range ch {
-		switch token := tok.(type) {
-		case doneStruct:
-			break loop
-		case []columnStruct:
-			conn.columns = token
-		case []interface{}:
-			lastRow = token
-		default:
-			t.Log("unknown token", tok)
-		}
+	err = reader.iterateResponse()
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if len(lastRow) == 0 {
+	if len(reader.lastRow) == 0 {
 		t.Fatal("expected row but no row set")
 	}
 
-	switch value := lastRow[0].(type) {
+	switch value := reader.lastRow[0].(type) {
 	case int32:
 		if value != 1 {
 			t.Error("Invalid value returned, should be 1", value)
@@ -174,46 +163,18 @@ loop:
 	}
 }
 
-func checkConnStr(t *testing.T) {
-	if len(os.Getenv("SQLSERVER_DSN")) > 0 {
-		return
-	}
-	if len(os.Getenv("HOST")) > 0 && len(os.Getenv("DATABASE")) > 0 {
-		return
-	}
-	t.Skip("no database connection string")
+func checkConnStr(t testing.TB) {
+	testConnParams(t)
 }
 
 // makeConnStr returns a URL struct so it may be modified by various
 // tests before used as a DSN.
-func makeConnStr(t *testing.T) *url.URL {
-	dsn := os.Getenv("SQLSERVER_DSN")
-	if len(dsn) > 0 {
-		parsed, err := url.Parse(dsn)
-		if err != nil {
-			t.Fatal("unable to parse SQLSERVER_DSN as URL", err)
-		}
-		values := parsed.Query()
-		if values.Get("log") == "" {
-			values.Set("log", "127")
-		}
-		parsed.RawQuery = values.Encode()
-		return parsed
-	}
-	values := url.Values{}
-	values.Set("log", "127")
-	values.Set("database", os.Getenv("DATABASE"))
-	return &url.URL{
-		Scheme:   "sqlserver",
-		Host:     os.Getenv("HOST"),
-		Path:     os.Getenv("INSTANCE"),
-		User:     url.UserPassword(os.Getenv("SQLUSER"), os.Getenv("SQLPASSWORD")),
-		RawQuery: values.Encode(),
-	}
+func makeConnStr(t testing.TB) *url.URL {
+	return testConnParams(t).toUrl()
 }
 
 type testLogger struct {
-	t *testing.T
+	t testing.TB
 }
 
 func (l testLogger) Printf(format string, v ...interface{}) {
@@ -224,15 +185,38 @@ func (l testLogger) Println(v ...interface{}) {
 	l.t.Log(v...)
 }
 
-func TestConnect(t *testing.T) {
-	checkConnStr(t)
-	SetLogger(testLogger{t})
-	conn, err := sql.Open("mssql", makeConnStr(t).String())
+func testConnection(t *testing.T, connStr string) {
+	conn, err := sql.Open("mssql", connStr)
 	if err != nil {
-		t.Error("Open connection failed:", err.Error())
+		t.Fatal("Open connection failed:", err.Error())
 		return
 	}
 	defer conn.Close()
+	row := conn.QueryRow("select 1")
+	var val int
+	err = row.Scan(&val)
+	if err != nil {
+		t.Fatal("Scan failed:", err.Error())
+	}
+	if val != 1 {
+		t.Fatalf("returned value %d does not match 1", val)
+	}
+}
+
+func TestConnect(t *testing.T) {
+	params := testConnParams(t)
+	SetLogger(testLogger{t})
+	testConnection(t, params.toUrl().String())
+}
+
+func TestConnectViaIp(t *testing.T) {
+	params := testConnParams(t)
+	ips, err := net.LookupIP(params.host)
+	if err != nil {
+		t.Fatal("Unable to lookup IP", err)
+	}
+	params.host = ips[0].String()
+	testConnection(t, params.toUrl().String())
 }
 
 func simpleQuery(conn *sql.DB, t *testing.T) (stmt *sql.Stmt) {
@@ -332,20 +316,22 @@ func TestMultipleQueryClose(t *testing.T) {
 	}
 	defer stmt.Close()
 
-	rows, err := stmt.Query()
-	if err != nil {
-		t.Error("Query failed:", err.Error())
-		return
-	}
-	rows.Close()
+	func() {
+		rows, err := stmt.Query()
+		if err != nil {
+			t.Fatal("Query failed:", err.Error())
+		}
+		defer rows.Close()
+	}()
 
-	rows, err = stmt.Query()
-	if err != nil {
-		t.Error("Query failed:", err.Error())
-		return
-	}
-	defer rows.Close()
-	checkSimpleQuery(rows, t)
+	func() {
+		rows, err := stmt.Query()
+		if err != nil {
+			t.Fatal("Query failed:", err.Error())
+		}
+		defer rows.Close()
+		checkSimpleQuery(rows, t)
+	}()
 }
 
 func TestPing(t *testing.T) {
@@ -409,23 +395,18 @@ func TestSecureConnection(t *testing.T) {
 	}
 }
 
-func TestBadConnect(t *testing.T) {
-	checkConnStr(t)
-	SetLogger(testLogger{t})
-	connURL := makeConnStr(t)
-	connURL.User = url.UserPassword("baduser", "badpwd")
-	badDSN := connURL.String()
+func TestBadCredentials(t *testing.T) {
+	params := testConnParams(t)
+	params.password = "padpwd"
+	params.user = "baduser"
+	testConnectionBad(t, params.toUrl().String())
+}
 
-	conn, err := sql.Open("mssql", badDSN)
-	if err != nil {
-		t.Error("Open connection failed:", err.Error())
-	}
-	defer conn.Close()
-
-	err = conn.Ping()
-	if err == nil {
-		t.Error("Ping should fail for connection: ", badDSN)
-	}
+func TestBadHost(t *testing.T) {
+	params := testConnParams(t)
+	params.host = "badhost"
+	params.instance = ""
+	testConnectionBad(t, params.toUrl().String())
 }
 
 func TestSSPIAuth(t *testing.T) {
@@ -522,15 +503,81 @@ func TestReadBVarByte(t *testing.T) {
 
 	// test empty buffer
 	memBuf = bytes.NewBuffer([]byte{})
-	s, err = readBVarByte(memBuf)
+	_, err = readBVarByte(memBuf)
 	if err == nil {
 		t.Error("readUsVarByte should fail on empty buffer, but it didn't")
 	}
 
 	// test short buffer
 	memBuf = bytes.NewBuffer([]byte{1})
-	s, err = readBVarByte(memBuf)
+	_, err = readBVarByte(memBuf)
 	if err == nil {
 		t.Error("readUsVarByte should fail on short buffer, but it didn't")
+	}
+}
+
+func BenchmarkPacketSize(b *testing.B) {
+	checkConnStr(b)
+	p, err := parseConnectParams(makeConnStr(b).String())
+	if err != nil {
+		b.Error("parseConnectParams failed:", err.Error())
+		return
+	}
+
+	benchmarks := []struct {
+		name       string
+		packetSize uint16
+	}{
+		{name: "PacketSize 2048", packetSize: 2048},
+		{name: "PacketSize 4096", packetSize: 4096},
+		{name: "PacketSize 8192", packetSize: 8192},
+		{name: "PacketSize 16384", packetSize: 16384},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				p.packetSize = bm.packetSize
+				runBatch(b, p)
+			}
+		})
+	}
+}
+
+func runBatch(t testing.TB, p connectParams) {
+	conn, err := connect(context.Background(), nil, optionalLogger{testLogger{t}}, p)
+	if err != nil {
+		t.Error("Open connection failed:", err.Error())
+		return
+	}
+	defer conn.buf.transport.Close()
+
+	headers := []headerStruct{
+		{hdrtype: dataStmHdrTransDescr,
+			data: transDescrHdr{0, 1}.pack()},
+	}
+	err = sendSqlBatch72(conn.buf, "select 1", headers, true)
+	if err != nil {
+		t.Error("Sending sql batch failed", err.Error())
+		return
+	}
+
+	reader := startReading(conn, context.Background(), nil)
+
+	err = reader.iterateResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(reader.lastRow) == 0 {
+		t.Fatal("expected row but no row set")
+	}
+
+	switch value := reader.lastRow[0].(type) {
+	case int32:
+		if value != 1 {
+			t.Error("Invalid value returned, should be 1", value)
+			return
+		}
 	}
 }
